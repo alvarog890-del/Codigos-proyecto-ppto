@@ -1,0 +1,182 @@
+import pandas as pd
+import os
+import re
+
+# --- CONFIGURACIÓN DE RUTAS ---
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+ruta_input = os.path.normpath(os.path.join(BASE_DIR, '..', 'input'))
+def formato_moneda_clp(valor):
+    """Convierte números a formato moneda legible ($ 1.234.567)."""
+    try:
+        if pd.isna(valor): return "$ 0"
+        return f"$ {float(valor):,.0f}".replace(",", ".")
+    except:
+        return str(valor)
+
+def extraer_fecha_flexible(texto):
+    """Busca una fecha de 8 dígitos con cualquier separador."""
+    if pd.isna(texto): return ""
+    match = re.search(r'(\d{2}[^\d]\d{2}[^\d]\d{2})', str(texto))
+    return match.group(1) if match else ""
+
+
+
+def procesar_y_visualizar():
+    if not os.path.exists(ruta_input):
+        print(f"⚠️ Carpeta no encontrada: {ruta_input}")
+        return None
+
+    archivos = [f for f in os.listdir(ruta_input) if f.endswith('.xlsx')]
+    print(f"📊 Archivos encontrados: {len(archivos)}")
+    
+    lista_maestra = []
+
+    for archivo in archivos:
+        id_proyecto = os.path.splitext(archivo)[0]
+        nombre_proyecto = os.path.splitext(archivo)[0]
+        ruta_completa = os.path.join(ruta_input, archivo)
+        
+        try:
+            df_hoja = pd.read_excel(ruta_completa, sheet_name='COSTOS', header=None)
+            mask_obra = (df_hoja == 'OBRA :')
+            pos_obra = mask_obra.stack()[mask_obra.stack() == True].index.tolist()
+            
+            mask_fecha_enc = (df_hoja == 'FECHA')
+            pos_fecha_enc = mask_fecha_enc.stack()[mask_fecha_enc.stack() == True].index.tolist()
+
+            mask_tiempoejecucion = (df_hoja == 'TIEMPO DE EJECUCION')
+            pos_tiempoejecucion = mask_tiempoejecucion.stack()[mask_tiempoejecucion.stack() == True].index.tolist()
+
+            mask_mts = (df_hoja == 'MTS²')
+            pos_mts = mask_mts.stack()[mask_mts.stack() == True].index.tolist()
+
+            mask_totalddhh = (df_hoja == 'TOTAL DD/HH')
+            pos_totalddhh = mask_totalddhh.stack()[mask_totalddhh.stack() == True].index.tolist()
+
+            mask_ventauf = (df_hoja == 'VENTA')
+            pos_ventauf = mask_ventauf.stack()[mask_ventauf.stack() == True].index.tolist()
+
+            mask_utilidaduf = (df_hoja == 'UT')
+            pos_utilidaduf = mask_utilidaduf.stack()[mask_utilidaduf.stack() == True].index.tolist()
+
+            mask_margen = (df_hoja == 'UT')
+            pos_margen = mask_margen.stack()[mask_margen.stack() == True].index.tolist()    
+
+
+            nombre_proyecto_val = ""
+            fecha_proyecto_val = ""
+            tiempoejecucion_proyecto_val = ""
+            mts_proyecto_val = ""
+            totalddhh_proyecto_val = ""
+            ventauf_proyecto_val = ""
+            utilidaduf_proyecto_val = ""
+            margen_proyecto_val = ""
+
+
+
+            if pos_tiempoejecucion:
+                f_o, c_o = pos_tiempoejecucion[0]
+                tiempoejecucion_proyecto_val = df_hoja.iloc[f_o + 1, c_o]
+
+            if pos_mts:
+                f_o, c_o = pos_mts[0]
+                mts_proyecto_val = df_hoja.iloc[f_o + 1, c_o + 1]
+
+            if pos_totalddhh:
+                f_o, c_o = pos_totalddhh[0]
+                totalddhh_proyecto_val = df_hoja.iloc[f_o + 1, c_o]
+
+            if pos_ventauf:
+                f_o, c_o = pos_ventauf[0]
+                ventauf_proyecto_val = df_hoja.iloc[f_o + 3, c_o]
+
+            if pos_utilidaduf:
+                f_o, c_o = pos_utilidaduf[0]
+                utilidaduf_proyecto_val = df_hoja.iloc[f_o + 2, c_o]
+
+            if pos_margen:
+                f_o, c_o = pos_margen[0]
+                margen_proyecto_val = df_hoja.iloc[f_o + 3, c_o]
+
+            if pos_obra:
+                f_o, c_o = pos_obra[0]
+                nombre_proyecto_val = df_hoja.iloc[f_o, c_o + 1]
+
+            if pos_fecha_enc:
+                f_f, c_f = pos_fecha_enc[0]
+                valor_f = df_hoja.iloc[f_f, c_f + 1]
+                # Convertimos a fecha estándar (Día-Mes-Año) si es posible
+                if hasattr(valor_f, 'strftime'):
+                    fecha_proyecto_val = valor_f.strftime('%d-%m-%Y')
+                else:
+                    fecha_proyecto_val = str(valor_f)
+            # --- BLOQUE MONEDAS: ESTRATEGIA DE FECHA ÚNICA (UF) ---
+            mask_m = (df_hoja == 'MONEDAS DE CAMBIO')
+            pos_m = mask_m.stack()[mask_m.stack() == True].index.tolist()
+            
+            datos_monedas = {}
+            fecha_moneda_unica = "" # Variable para la fecha maestra
+
+            if pos_m:
+                f_m, c_m = pos_m[0]
+                for i in range(1, 5): # Buscamos en las filas siguientes al título
+                    if f_m + i < len(df_hoja):
+                        celda_nombre = str(df_hoja.iloc[f_m + i, c_m]).upper()
+                        valor_moneda = df_hoja.iloc[f_m + i, c_m + 1]
+                        
+                        # Extraemos valores individuales
+                        if "EURO" in celda_nombre: datos_monedas['Valor_EURO'] = valor_moneda
+                        if "US$" in celda_nombre or "DOLAR" in celda_nombre: datos_monedas['Valor_US$'] = valor_moneda
+                        
+                        # PRIORIDAD: Extraer fecha solo de la fila UF
+                        if "UF" in celda_nombre:
+                            datos_monedas['Valor_UF'] = valor_moneda
+                            fecha_moneda_unica = extraer_fecha_flexible(df_hoja.iloc[f_m + i, c_m])
+
+            # --- BLOQUE TABLA TURQUESA: INALTERADO ---
+            mascara = (df_hoja == 'COSTOS APROBADOS')
+            posiciones = mascara.stack()[mascara.stack() == True].index.tolist()
+
+            fila_real, col_real = None, None
+            for f, c in posiciones:
+                if f + 1 < len(df_hoja) and str(df_hoja.iloc[f + 1, c]).strip() == 'MAT':
+                    fila_real, col_real = f, c
+                    break
+            
+            if fila_real is not None:
+                titulos = df_hoja.iloc[fila_real + 1, col_real : col_real + 8].values
+                valores = df_hoja.iloc[fila_real + 6, col_real : col_real + 8].values
+
+                # Creamos el registro con la fecha única de UF
+                registro = {
+                    'ID': id_proyecto,
+                    'Proyecto': nombre_proyecto,
+                    'Proyecto': nombre_proyecto_val, # Usamos el dato extraído de la celda "OBRA :"
+                    'Fecha': fecha_proyecto_val,     # Usamos el dato extraído de la celda "FECHA" 
+                    'Fecha_Moneda': fecha_moneda_unica,
+                    **datos_monedas,
+                    'Tiempo_Ejecucion': tiempoejecucion_proyecto_val,
+                    'MTS' : mts_proyecto_val,
+                    'HH' : totalddhh_proyecto_val,
+                    'Venta_UF' : ventauf_proyecto_val,
+                    'Utilidad_UF' : utilidaduf_proyecto_val,
+                    'Margen' : margen_proyecto_val
+                }
+                
+                for t, v in zip(titulos, valores):
+                    if pd.notnull(t):
+                        registro[str(t).strip()] = formato_moneda_clp(v)
+
+                lista_maestra.append(pd.DataFrame([registro]))
+                print(f"✅ Procesado: {nombre_proyecto}")
+
+        except Exception as e:
+            print(f"❌ Error en {archivo}: {e}")
+
+    return pd.concat(lista_maestra, ignore_index=True) if lista_maestra else None
+
+# %%
+if __name__ == "__main__":
+    resultado = procesar_y_visualizar()
+    print("--- Proceso terminado. Revisa el Data Viewer ---")
+    print(resultado.isnull().sum())
