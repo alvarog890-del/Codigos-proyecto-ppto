@@ -1,0 +1,75 @@
+import pandas as pd
+import os
+
+# Ruta configurada
+RUTA_INPUT = r'C:\Proyectos_Data\Test_FCL_CLIMA\input' 
+
+def procesar_clima_minimo():
+    lista_maestra = []
+    print(f"--- INICIANDO CONSOLIDACIÓN MÍNIMA ---")
+    
+    if not os.path.exists(RUTA_INPUT):
+        print(f"❌ La ruta no existe: {RUTA_INPUT}")
+        return None
+    
+    archivos = [f for f in os.listdir(RUTA_INPUT) if f.endswith('.xlsx') and not f.startswith('~$')]
+    
+    for archivo in archivos:
+        try:
+            ruta_completa = os.path.join(RUTA_INPUT, archivo)
+            id_proyecto = os.path.splitext(archivo)[0]
+            
+            df_hoja = pd.read_excel(ruta_completa, sheet_name='Resumen Costo-Venta', header=None)
+
+            # Función de búsqueda robusta
+            def buscar_dato(texto, d_f=0, d_c=0):
+                mascara = df_hoja.map(lambda x: str(x).strip().lower() == texto.strip().lower())
+                pos = mascara.stack()[mascara.stack() == True].index.tolist()
+                if pos:
+                    return df_hoja.iloc[pos[0][0] + d_f, pos[0][1] + d_c]
+                return None
+
+            # Extracción exclusiva de lo que sabemos que funciona
+            registro = {
+                'ID_Proyecto': id_proyecto,
+                'OBRA': buscar_dato('Nombre Proyecto:', 0, 2),
+                'FECHA': buscar_dato('Fecha:', 0, 2),
+                'VALOR_UF': buscar_dato('UF', 0, 1),
+                'VALOR_DOLAR': buscar_dato('DÓLAR', 0, 1),
+                'VALOR_EURO': buscar_dato('EURO', 0, 1),
+                'MTS_Acondicionada': buscar_dato('AREA ACONDICIONADA M2', 0, 1),
+                'MTS_TOTAL': buscar_dato('AREA TOTAL M2', 0, 1),
+                'Parejas': buscar_dato('Parejas', 1, 0),
+                'HH_Parejas': buscar_dato('RESUMEN', 2, 9),
+                'Venta_UF': buscar_dato('TOTAL VENTA UF', 0, 1),
+                'Margen': buscar_dato('MARGEN REAL VENTA (MATERIALES + EQUIPOS)', 0, 1),
+                'MAT': buscar_dato('RESUMEN', 2, 0),
+                'EQ': buscar_dato('RESUMEN', 2, 2),
+                'MOD': buscar_dato('RESUMEN', 2, 3),
+                'MOI': buscar_dato('RESUMEN', 2, 4),
+                'GG': buscar_dato('RESUMEN', 2, 5),
+                'VTA_Total': buscar_dato('RESUMEN', 2, 6)
+                  
+            }
+            
+            lista_maestra.append(pd.DataFrame([registro]))
+            print(f"✅ Procesado: {id_proyecto}")
+
+        except Exception as e:
+            print(f"❌ Error en {archivo}: {e}")
+
+    # Consolidación final sin procesamiento de columnas inexistentes
+    if lista_maestra:
+        df_final = pd.concat(lista_maestra, ignore_index=True)
+        # Convertimos solo MAT a numérico
+        df_final['MAT'] = pd.to_numeric(df_final['MAT'], errors='coerce')
+        return df_final
+    return None
+
+if __name__ == "__main__":
+    resultado_clima = procesar_clima_minimo()
+    if resultado_clima is not None:
+        print("\n--- PROCESO FINALIZADO ---")
+        print(resultado_clima.head())
+    else:
+        print("No se generaron datos.")
