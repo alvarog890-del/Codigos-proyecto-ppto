@@ -1,0 +1,124 @@
+import pandas as pd
+import os
+
+# Ruta configurada
+RUTA_INPUT = r'E:\Proyecto_Data\Test_FTEL_TELECOMUNICACIONES\input'
+
+# LAS DOS HOJAS EXACTAS QUE NECESITAS (El código buscará en este orden)
+HOJAS_REQUERIDAS = ["RESUMEN OFERTA", "ITEMIZADO + MAT"]
+
+def buscar_dato_en_df(df, texto, d_f=0, d_c=0):
+    """Busca en un DataFrame individual."""
+    try:
+        texto_norm = str(texto).strip().lower()
+        # Usamos .map() para compatibilidad con versiones nuevas de pandas
+        mask = df.map(lambda x: str(x).strip().lower() == texto_norm)
+        posiciones = mask.stack()[mask.stack() == True].index.tolist()
+        if posiciones:
+            fila, col = posiciones[0]
+            return df.iloc[fila + d_f, col + d_c]
+    except Exception:
+        pass
+    return None
+
+def procesar_telecom_doble_hoja():
+    lista_maestra = []
+    print(f"--- INICIANDO CONSOLIDACIÓN ESTRICTA (DOS HOJAS) ---")
+
+    if not os.path.exists(RUTA_INPUT):
+        print(f"❌ La ruta no existe: {RUTA_INPUT}")
+        return None
+
+    archivos = [f for f in os.listdir(RUTA_INPUT) if f.endswith('.xlsx') and not f.startswith('~$')]
+
+    for archivo in archivos:
+        ruta_completa = os.path.join(RUTA_INPUT, archivo)
+        id_proyecto = os.path.splitext(archivo)[0]
+
+        try:
+            xls = pd.ExcelFile(ruta_completa)
+            hojas_disponibles = xls.sheet_names
+
+            # 1. EL FILTRO ESTRICTO: Revisamos si faltan hojas
+            hojas_faltantes = [h for h in HOJAS_REQUERIDAS if h not in hojas_disponibles]
+            
+            if hojas_faltantes:
+                # Si falta al menos una hoja, avisa y OMITE el archivo
+                print(f"⚠️ OMITIDO: {archivo} -> Faltan las hojas: {hojas_faltantes}")
+                continue 
+
+            # 2. CARGA DE AMBAS HOJAS EN MEMORIA
+            dfs_cargados = []
+            for hoja in HOJAS_REQUERIDAS:
+                dfs_cargados.append(pd.read_excel(ruta_completa, sheet_name=hoja, header=None))
+
+            # 3. EL NUEVO BUSCADOR (Escanea la hoja 1 y si no está, pasa a la hoja 2)
+            def buscar_en_ambas(texto, d_f=0, d_c=0):
+                for df in dfs_cargados:
+                    resultado = buscar_dato_en_df(df, texto, d_f, d_c)
+                    if resultado is not None:
+                        return resultado
+                return None # Si no lo encontró en ninguna hoja
+
+            # 4. EXTRACCIÓN UNIFICADA (Un solo diccionario por proyecto)
+            registro = {
+                'ID_Proyecto': id_proyecto,
+                'OBRA': buscar_en_ambas('OBRA:', 0, 1),
+                'FECHA': buscar_en_ambas('Fecha:', 0, 1),
+                'VALOR_UF': buscar_en_ambas('UF', 1, 0),
+                'VALOR_DOLAR': buscar_en_ambas('DÓLAR', 1, 0),
+                'VALOR_EURO': buscar_en_ambas('EURO', 0, 1),
+                'DURACION_ESTIMADA': buscar_en_ambas('DURACION ESTIMADA', 0, 2),
+                'MTS_Acondicionada': buscar_en_ambas('AREA ACONDICIONADA M2', 0, 1),
+                'MTS_TOTAL': buscar_en_ambas('AREA TOTAL M2', 0, 1),
+                'Parejas': buscar_en_ambas('Parejas', 1, 0),
+                'HH_Parejas': buscar_en_ambas('RESUMEN', 2, 9),
+                'COSTO_DIRECTO': buscar_en_ambas('COSTO DIRECTO', 0, 1),
+                'COSTO_DIRECTO_UF': buscar_en_ambas('COSTO DIRECTO', 0, 2),
+                'VTA_Total': buscar_en_ambas('VENTA', 0, 1),
+                'VTA_Total_UF': buscar_en_ambas('VENTA', 0, 2),
+                'UTILIDAD': buscar_en_ambas('UTILIDAD', 0, 1),
+                'UTILIDAD_UF': buscar_en_ambas('UTILIDAD', 0, 2),
+                'MARGEN': buscar_en_ambas('MARGEN', - 1, 0),
+                'MAT': buscar_en_ambas('MATERIALES', 0, 1),
+                'MAT_UF': buscar_en_ambas('MATERIALES', 0, 2),
+                'EQ': buscar_en_ambas('EQUIPOS', 0, 1),
+                'EQ_UF': buscar_en_ambas('EQUIPOS', 0, 2),
+                'MOD': buscar_en_ambas('MOD', 0, 1),
+                'MOD_UF': buscar_en_ambas('MOD', 0, 2),
+                'MOI': buscar_en_ambas('MOI', 0, 1),
+                'MOI_UF': buscar_en_ambas('MOI', 0, 2),
+                'GG': buscar_en_ambas('GASTOS GENERALES', 0, 1),
+                'GG_UF': buscar_en_ambas('GASTOS GENERALES', 0, 2),
+            }
+            
+            lista_maestra.append(pd.DataFrame([registro]))
+            print(f"✅ Procesado con éxito: {id_proyecto}")
+
+        except Exception as e:
+            print(f"❌ Error en {archivo}: {e}")
+
+    # 5. CONSOLIDACIÓN Y CONVERSIÓN NUMÉRICA
+    if lista_maestra:
+        df_final = pd.concat(lista_maestra, ignore_index=True)
+        
+        cols_numericas = [
+            'VALOR_UF', 'VALOR_DOLAR', 'VALOR_EURO', 'COSTO_DIRECTO', 'COSTO_DIRECTO_UF',
+            'VTA_Total', 'VTA_Total_UF', 'UTILIDAD', 'UTILIDAD_UF', 'MAT', 'MAT_UF', 
+            'EQ', 'EQ_UF', 'MOD', 'MOD_UF', 'MOI', 'MOI_UF', 'GG', 'GG_UF'
+        ]
+        
+        for col in cols_numericas:
+            if col in df_final.columns:
+                df_final[col] = pd.to_numeric(df_final[col], errors='coerce')
+                
+        return df_final
+    return None
+
+if __name__ == "__main__":
+    resultado_telecom = procesar_telecom_doble_hoja()
+    if resultado_telecom is not None:
+        print("\n--- PROCESO FINALIZADO ---")
+        print(f"Total de proyectos válidos consolidados: {resultado_telecom.shape[0]}")
+    else:
+        print("No se generaron datos válidos.")
