@@ -1,0 +1,134 @@
+import pandas as pd
+import os
+
+# Ruta configurada
+RUTA_INPUT = r'E:\Proyecto_Data\Test_FSE_SEGURIDAD_ELECTRONICA\input'
+
+# Hojas requeridas en orden de prioridad
+HOJAS_REQUERIDAS = ["RESUMEN OFERTA", "ITEMIZADO + MAT"]
+
+def buscar_en_zona(df, texto, d_f=0, d_c=0, fila_inicio=0):
+    """Busca un dato solo desde la fila_inicio hacia abajo para evitar borradores."""
+    try:
+        # Recortamos la vista del Excel para buscar solo en la zona deseada
+        df_recortado = df.iloc[fila_inicio:]
+        texto_norm = str(texto).strip().lower()
+        
+        mask = df_recortado.map(lambda x: str(x).strip().lower() == texto_norm)
+        posiciones = mask.stack()[mask.stack() == True].index.tolist()
+        
+        if posiciones:
+            fila, col = posiciones[0]
+            # Devolvemos el valor relativo a la posición real del DataFrame original
+            return df.iloc[fila + d_f, col + d_c]
+    except Exception:
+        pass
+    return None
+
+def procesar_telecom_doble_hoja():
+    lista_maestra = []
+    print(f"--- INICIANDO CONSOLIDACIÓN CON ANCLA (FILTRO DE BORRADORES) ---")
+
+    if not os.path.exists(RUTA_INPUT):
+        print(f"❌ La ruta no existe: {RUTA_INPUT}")
+        return None
+
+    archivos = [f for f in os.listdir(RUTA_INPUT) if f.endswith('.xlsx') and not f.startswith('~$')]
+
+    for archivo in archivos:
+        ruta_completa = os.path.join(RUTA_INPUT, archivo)
+        id_proyecto = os.path.splitext(archivo)[0]
+
+        try:
+            xls = pd.ExcelFile(ruta_completa)
+            hojas_disponibles = xls.sheet_names
+
+            # 1. Filtro estricto de hojas
+            faltantes = [h for h in HOJAS_REQUERIDAS if h not in hojas_disponibles]
+            if faltantes:
+                print(f"⚠️ OMITIDO: {archivo} -> Faltan las hojas: {faltantes}")
+                continue 
+
+            # 2. Carga de ambas hojas
+            dfs_cargados = []
+            for hoja in HOJAS_REQUERIDAS:
+                dfs_cargados.append(pd.read_excel(ruta_completa, sheet_name=hoja, header=None))
+
+            # 3. LOCALIZAR EL ANCLA EN LA HOJA "RESUMEN OFERTA"
+            # Buscamos el título exacto que separa el borrador de la oferta real
+            df_res = dfs_cargados[0]
+            mask_ancla = df_res.map(lambda x: str(x).strip().upper() == "RESUMEN DE OFERTA")
+            pos_ancla = mask_ancla.stack()[mask_ancla.stack() == True].index.tolist()
+            fila_ancla = pos_ancla[0][0] if pos_ancla else 0
+
+            # 4. Buscador inteligente (Aplica ancla solo a la primera hoja)
+            def buscar_en_ambas(texto, d_f=0, d_c=0):
+                # Primero busca en RESUMEN OFERTA desde el ancla hacia abajo
+                res = buscar_en_zona(dfs_cargados[0], texto, d_f, d_c, fila_inicio=fila_ancla)
+                if res is not None:
+                    return res
+                # Si no está ahí, busca en ITEMIZADO + MAT desde el inicio
+                return buscar_en_zona(dfs_cargados[1], texto, d_f, d_c, fila_inicio=0)
+
+            # 5. EXTRACCIÓN (Mantiene todo tu listado original)
+            registro = {
+                'ID_Proyecto': id_proyecto,
+                'OBRA': buscar_en_ambas('OBRA:', 0, 1) or buscar_en_ambas('Nombre Proyecto:', 0, 1),
+                'FECHA': buscar_en_ambas('Fecha:', 0, 1),
+                'VALOR_UF': buscar_en_ambas('UF', 1, 0),
+                'VALOR_DOLAR': buscar_en_ambas('DÓLAR', 1, 0),
+                'VALOR_EURO': buscar_en_ambas('EURO', 0, 1),
+                'DURACION_ESTIMADA': buscar_en_ambas('DURACION ESTIMADA', 0, 2),
+                'MTS_Acondicionada': buscar_en_ambas('AREA ACONDICIONADA M2', 0, 1),
+                'MTS_TOTAL': buscar_en_ambas('AREA TOTAL M2', 0, 1),
+                'Parejas': buscar_en_ambas('Parejas', 1, 0),
+                'HH_Parejas': buscar_en_ambas('RESUMEN', 2, 9),
+                'COSTO_DIRECTO': buscar_en_ambas('COSTO DIRECTO', 0, 1),
+                'COSTO_DIRECTO_UF': buscar_en_ambas('COSTO DIRECTO', 0, 2),
+                'VTA_Total': buscar_en_ambas('VENTA', 0, 1),
+                'VTA_Total_UF': buscar_en_ambas('VENTA', 0, 2),
+                'UTILIDAD': buscar_en_ambas('UTILIDAD', 0, 1),
+                'UTILIDAD_UF': buscar_en_ambas('UTILIDAD', 0, 2),
+                'MARGEN': buscar_en_ambas('MARGEN', -1, 0), # Ajustar d_f si la celda está arriba/abajo
+                'MAT': buscar_en_ambas('MATERIALES', 0, 1),
+                'MAT_UF': buscar_en_ambas('MATERIALES', 0, 2),
+                'EQ': buscar_en_ambas('EQUIPOS', 0, 1),
+                'EQ_UF': buscar_en_ambas('EQUIPOS', 0, 2),
+                'MOD': buscar_en_ambas('MOD', 0, 1),
+                'MOD_UF': buscar_en_ambas('MOD', 0, 2),
+                'MOI': buscar_en_ambas('MOI', 0, 1),
+                'MOI_UF': buscar_en_ambas('MOI', 0, 2),
+                'GG': buscar_en_ambas('GASTOS GENERALES', 0, 1),
+                'GG_UF': buscar_en_ambas('GASTOS GENERALES', 0, 2),
+            }
+            
+            lista_maestra.append(pd.DataFrame([registro]))
+            print(f"✅ Procesado: {id_proyecto}")
+
+        except Exception as e:
+            print(f"❌ Error en {archivo}: {e}")
+
+    # 6. CONSOLIDACIÓN Y CONVERSIÓN NUMÉRICA
+    if lista_maestra:
+        df_final = pd.concat(lista_maestra, ignore_index=True)
+        
+        cols_numericas = [
+            'VALOR_UF', 'VALOR_DOLAR', 'VALOR_EURO', 'COSTO_DIRECTO', 'COSTO_DIRECTO_UF',
+            'VTA_Total', 'VTA_Total_UF', 'UTILIDAD', 'UTILIDAD_UF', 'MAT', 'MAT_UF', 
+            'EQ', 'EQ_UF', 'MOD', 'MOD_UF', 'MOI', 'MOI_UF', 'GG', 'GG_UF'
+        ]
+        
+        for col in cols_numericas:
+            if col in df_final.columns:
+                df_final[col] = pd.to_numeric(df_final[col], errors='coerce')
+                
+        return df_final
+    return None
+
+if __name__ == "__main__":
+    resultado_telecom = procesar_telecom_doble_hoja()
+    if resultado_telecom is not None:
+        print("\n--- PROCESO FINALIZADO ---")
+        print(f"Total de proyectos válidos consolidados: {resultado_telecom.shape[0]}")
+    else:
+        print("No se generaron datos válidos.")
