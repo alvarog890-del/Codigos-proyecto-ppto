@@ -2,7 +2,7 @@ import pandas as pd
 import os
 
 # Ruta configurada
-RUTA_INPUT = r'C:\Proyectos_Data\FPCI_EXTINCION\input' 
+RUTA_INPUT = r'E:\Proyecto_Data\Test_EXTINCION\input' 
 
 def procesar_extincion_minimo():
     lista_maestra = []
@@ -37,19 +37,19 @@ def procesar_extincion_minimo():
                 'VALOR_UF': buscar_dato('UF', 0, 1),
                 'VALOR_DOLAR': buscar_dato('DÓLAR', 0, 1),
                 'VALOR_EURO': buscar_dato('EURO', 0, 1),
-                'DURACION_ESTIMADA': buscar_dato('DURACION ESTIMADA', 0, 2),
+                'DURACION_ESTIMADA': buscar_dato('DURACION ESTIMADA', 2, 0),
                 'MTS_Acondicionada': buscar_dato('AREA ACONDICIONADA M2', 0, 1),
                 'MTS_TOTAL': buscar_dato('AREA TOTAL M2', 0, 1),
                 'Parejas': buscar_dato('Parejas', 1, 0),
                 'HH_Parejas': buscar_dato('RESUMEN', 2, 9),
-                'Venta_UF': buscar_dato('TOTAL VENTA UF', 0, 6),
-                'Margen': buscar_dato('MARGEN REAL VENTA (MATERIALES + EQUIPOS)', 0, 6),
+                'Venta_UF': buscar_dato('TOTAL VENTA UF', 0, 7),
+                'Margen': buscar_dato('MARGEN REAL VENTA (MATERIALES + EQUIPOS)', 0, 7),
                 'MAT': buscar_dato('RESUMEN', 2, 0),
                 'EQ': buscar_dato('RESUMEN', 2, 2),
                 'MOD': buscar_dato('RESUMEN', 2, 3),
                 'MOI': buscar_dato('RESUMEN', 2, 4),
                 'GG': buscar_dato('RESUMEN', 2, 5),
-                'VTA_Total': buscar_dato('RESUMEN', 2, 6)
+                'VTA_Total': buscar_dato('TOTAL VENTA $$', 0, 7)
                   
             }
             
@@ -68,9 +68,9 @@ def procesar_extincion_minimo():
     return None
 
 if __name__ == "__main__":
-    resultado_clima = procesar_extincion_minimo()
-    if resultado_clima is not None:
+    resultado_extincion = procesar_extincion_minimo()
+    if resultado_extincion is not None:
         print("\n--- PROCESO FINALIZADO ---")
-        print(resultado_clima.head())
+        print(resultado_extincion.head())
     else:
         print("No se generaron datos.")
