@@ -1,0 +1,204 @@
+import pandas as pd
+import os
+
+# --- CONFIGURACIÓN DE RUTAS ---
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+ruta_input = os.path.normpath(os.path.join(BASE_DIR, '..', 'input'))
+
+HOJA = 'Resumen Costo-Venta'
+
+
+def extraer_numero(valor):
+    """Convierte a float. Retorna None si no es posible."""
+    try:
+        if pd.isna(valor):
+            return None
+        return float(valor)
+    except (TypeError, ValueError):
+        return None
+
+
+def normalizar_fecha(valor):
+    """Convierte fecha a string DD-MM-YYYY, sea datetime o texto."""
+    if valor is None or (isinstance(valor, float) and pd.isna(valor)):
+        return None
+    if hasattr(valor, 'strftime'):
+        return valor.strftime('%d-%m-%Y')
+    return str(valor)
+
+
+def procesar_clima():
+    if not os.path.exists(ruta_input):
+        print(f"⚠️ Carpeta no encontrada: {ruta_input}")
+        return None
+
+    archivos = [f for f in os.listdir(ruta_input)
+                if f.endswith('.xlsx') and not f.startswith('~$')]
+    print(f"📊 Archivos encontrados: {len(archivos)}")
+
+    lista_maestra = []
+
+    for archivo in archivos:
+        id_proyecto = os.path.splitext(archivo)[0]
+        ruta_completa = os.path.join(ruta_input, archivo)
+
+        try:
+            df = pd.read_excel(ruta_completa, sheet_name=HOJA, header=None)
+
+            def buscar(texto, d_f=0, d_c=0, exacto=True):
+                """Busca texto en la hoja y retorna celda con offset."""
+                if exacto:
+                    mascara = df.apply(
+                        lambda col: col.map(
+                            lambda x: str(x).strip().lower() == texto.strip().lower()
+                        )
+                    )
+                else:
+                    mascara = df.apply(
+                        lambda col: col.map(
+                            lambda x: texto.strip().lower() in str(x).strip().lower()
+                        )
+                    )
+                pos = mascara.stack()[mascara.stack()].index.tolist()
+                if pos:
+                    f, c = pos[0]
+                    return df.iloc[f + d_f, c + d_c]
+                return None
+
+            # ── 1. IDENTIFICACIÓN ──────────────────────────────────────────
+            nombre_val = buscar('Nombre Proyecto:', 0, 2)
+            fecha_val  = normalizar_fecha(buscar('Fecha:', 0, 2))
+
+            # ── 2. MONEDAS Y DURACIÓN (anchor: FECHA en bloque monedas) ───
+            # Desde FECHA: UF en (1,-1), USD en (2,-1), EURO en (3,-1)
+            # Fecha moneda en (1,0), duración en (2,+1)
+            valor_uf    = None
+            valor_usd   = None
+            valor_euro  = None
+            fecha_moneda = None
+            duracion_val = None
+
+            mascara_fecha = df.apply(
+                lambda col: col.map(lambda x: str(x).strip() == 'FECHA')
+            )
+            pos_fecha = mascara_fecha.stack()[mascara_fecha.stack()].index.tolist()
+
+            # Usar la primera ocurrencia que tenga 'UF' dos filas abajo a la izquierda
+            for f_f, c_f in pos_fecha:
+                try:
+                    if str(df.iloc[f_f + 1, c_f - 2]).strip().upper() == 'UF':
+                        valor_uf    = extraer_numero(df.iloc[f_f + 1, c_f - 1])
+                        valor_usd   = extraer_numero(df.iloc[f_f + 2, c_f - 1])
+                        valor_euro  = extraer_numero(df.iloc[f_f + 3, c_f - 1])
+                        fecha_moneda = normalizar_fecha(df.iloc[f_f + 1, c_f])
+                        duracion_val = extraer_numero(df.iloc[f_f + 2, c_f + 1])
+                        break
+                except IndexError:
+                    continue
+
+            # ── 3. MTS ─────────────────────────────────────────────────────
+            mts_acond = extraer_numero(buscar('AREA ACONDICIONADA M2', 0, 1))
+            mts_total = extraer_numero(buscar('AREA TOTAL M2', 0, 1))
+
+            # ── 4. BLOQUE VENTA/MARGEN (anchor: TOTAL VENTA UF) ───────────
+            # offset(0,+6) = Venta UF
+            # offset(+1,+6) = Margen
+            # offset(-1,+6) = Venta CLP (TOTAL VENTA $$)
+            venta_uf_val  = None
+            margen_val    = None
+            venta_clp_val = None
+
+            mascara_vuf = df.apply(
+                lambda col: col.map(
+                    lambda x: str(x).strip().upper() == 'TOTAL VENTA UF'
+                )
+            )
+            pos_vuf = mascara_vuf.stack()[mascara_vuf.stack()].index.tolist()
+            if pos_vuf:
+                f_v, c_v = pos_vuf[0]
+                venta_uf_val  = extraer_numero(df.iloc[f_v,     c_v + 6])
+                margen_val    = extraer_numero(df.iloc[f_v + 1, c_v + 6])
+                venta_clp_val = extraer_numero(df.iloc[f_v - 1, c_v + 6])
+
+            # ── 5. TABLA RESUMEN (anchor: Materiales) ─────────────────────
+            # fila headers: Materiales(0,0) | Importado(0,+2) | MOD(0,+3) |
+            #               MOI(0,+4) | GG(0,+5) | Costo(0,+6)
+            # fila valores: offset(+1, ...)
+            # Parejas en (1,+7), HH_Parejas en (2,+7)
+            mat_val    = None
+            eq_val     = None   # Importado = equipos
+            mod_val    = None
+            moi_val    = None
+            gg_val     = None
+            costo_val  = None
+            hh_val     = None
+
+            mascara_mat = df.apply(
+                lambda col: col.map(
+                    lambda x: str(x).strip().lower() == 'materiales'
+                )
+            )
+            pos_mat = mascara_mat.stack()[mascara_mat.stack()].index.tolist()
+            # Validar que es la fila correcta: debe tener 'Importado' en offset (0,+2)
+            pos_mat_valida = None
+            for f_m_c, c_m_c in pos_mat:
+                try:
+                    if str(df.iloc[f_m_c, c_m_c + 2]).strip().lower() == 'importado':
+                        pos_mat_valida = (f_m_c, c_m_c)
+                        break
+                except IndexError:
+                    continue
+            if pos_mat_valida:
+                f_m, c_m = pos_mat_valida
+                mat_val   = extraer_numero(df.iloc[f_m + 1, c_m])
+                eq_val    = extraer_numero(df.iloc[f_m + 1, c_m + 2])
+                mod_val   = extraer_numero(df.iloc[f_m + 1, c_m + 3])
+                moi_val   = extraer_numero(df.iloc[f_m + 1, c_m + 4])
+                gg_val    = extraer_numero(df.iloc[f_m + 1, c_m + 5])
+                costo_val = extraer_numero(df.iloc[f_m + 1, c_m + 6])
+                # HH totales en offset(+1,+9) — columna TOTALES
+                hh_val    = extraer_numero(df.iloc[f_m + 1, c_m + 9])
+
+            # ── 6. ARMAR REGISTRO ──────────────────────────────────────────
+            registro = {
+                'ID':               id_proyecto,
+                'Proyecto':         nombre_val,
+                'Fecha':            fecha_val,
+                'Fecha_Moneda':     fecha_moneda,
+                'Valor_UF':         valor_uf,
+                'Valor_USD':        valor_usd,
+                'Valor_EURO':       valor_euro,
+                'Duracion_Meses':   duracion_val,
+                'MTS_Acondicionada': mts_acond,
+                'MTS_Total':        mts_total,
+                'Venta_CLP':        venta_clp_val,
+                'Venta_UF':         venta_uf_val,
+                'Margen':           margen_val,
+                'MAT':              mat_val,
+                'EQ':               eq_val,
+                'MOD':              mod_val,
+                'MOI':              moi_val,
+                'GG':               gg_val,
+                'Costo_Total':      costo_val,
+                'HH_Parejas':       hh_val,
+            }
+
+            lista_maestra.append(pd.DataFrame([registro]))
+            print(f"✅ Procesado: {id_proyecto}")
+
+        except Exception as e:
+            print(f"❌ Error en {archivo}: {e}")
+
+    if not lista_maestra:
+        return None
+
+    return pd.concat(lista_maestra, ignore_index=True)
+
+
+if __name__ == "__main__":
+    resultado = procesar_clima()
+    if resultado is not None:
+        print(f"\n--- Proceso terminado ---")
+        print(f"Filas: {len(resultado)} | Columnas: {len(resultado.columns)}")
+        print("\nMissing values por columna:")
+        print(resultado.isnull().sum())
