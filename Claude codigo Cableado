@@ -1,0 +1,198 @@
+import pandas as pd
+import os
+
+# --- CONFIGURACIÓN DE RUTAS ---
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+ruta_input = os.path.normpath(os.path.join(BASE_DIR, '..', 'input'))
+
+HOJA_RESUMEN   = 'RESUMEN OFERTA'
+HOJA_ITEMIZADO = 'ITEMIZADO + MAT'
+HOJAS_REQUERIDAS = [HOJA_RESUMEN, HOJA_ITEMIZADO]
+
+
+def extraer_numero(valor):
+    try:
+        if pd.isna(valor): return None
+        return float(valor)
+    except (TypeError, ValueError): return None
+
+
+def normalizar_fecha(valor):
+    if valor is None or (isinstance(valor, float) and pd.isna(valor)): return None
+    if hasattr(valor, 'strftime'): return valor.strftime('%d-%m-%Y')
+    return str(valor)
+
+
+def procesar_cableado():
+    if not os.path.exists(ruta_input):
+        print(f"⚠️ Carpeta no encontrada: {ruta_input}")
+        return None
+
+    archivos = [f for f in os.listdir(ruta_input)
+                if f.endswith('.xlsx') and not f.startswith('~$')]
+    print(f"📊 Archivos encontrados: {len(archivos)}")
+
+    lista_maestra = []
+
+    for archivo in archivos:
+        id_proyecto = os.path.splitext(archivo)[0]
+        ruta_completa = os.path.join(ruta_input, archivo)
+
+        try:
+            xls = pd.ExcelFile(ruta_completa)
+            faltantes = [h for h in HOJAS_REQUERIDAS if h not in xls.sheet_names]
+            if faltantes:
+                print(f"⚠️ Omitido: {archivo} → Faltan hojas: {faltantes}")
+                continue
+
+            df_res = pd.read_excel(ruta_completa, sheet_name=HOJA_RESUMEN,  header=None)
+            df_it  = pd.read_excel(ruta_completa, sheet_name=HOJA_ITEMIZADO, header=None)
+
+            # ── 1. IDENTIFICACIÓN (desde ITEMIZADO + MAT) ─────────────────
+            nombre_val = None
+            fecha_val  = None
+
+            mask_obra = df_it.apply(lambda col: col.map(
+                lambda x: str(x).strip().upper() in ('OBRA:', 'OBRA:  ', 'NOMBRE PROYECTO:')))
+            pos_obra = mask_obra.stack()[mask_obra.stack()].index.tolist()
+            if pos_obra:
+                f_o, c_o = pos_obra[0]
+                nombre_val = df_it.iloc[f_o, c_o + 1]
+
+            mask_fecha = df_it.apply(lambda col: col.map(
+                lambda x: str(x).strip().upper() in ('FECHA:', 'FECHA')))
+            pos_fecha = mask_fecha.stack()[mask_fecha.stack()].index.tolist()
+            if pos_fecha:
+                f_f, c_f = pos_fecha[0]
+                fecha_val = normalizar_fecha(df_it.iloc[f_f, c_f + 1])
+
+            # ── 2. MONEDAS (desde ITEMIZADO + MAT) ────────────────────────
+            # DÓLAR puede estar en columnas distintas según planilla
+            valor_dolar = None
+            valor_uf    = None
+
+            mask_dolar = df_it.apply(lambda col: col.map(
+                lambda x: str(x).strip().upper() in ('DÓLAR', 'DÓLAR ', 'DOLAR')))
+            pos_dolar = mask_dolar.stack()[mask_dolar.stack()].index.tolist()
+            if pos_dolar:
+                f_d, c_d = pos_dolar[0]
+                valor_dolar = extraer_numero(df_it.iloc[f_d + 1, c_d])
+                valor_uf    = extraer_numero(df_it.iloc[f_d + 1, c_d + 1])
+
+            # ── 3. ANCHOR: RESUMEN DE OFERTA ──────────────────────────────
+            mask_anc = df_res.apply(lambda col: col.map(
+                lambda x: 'RESUMEN' in str(x).strip().upper() and
+                          'OFERTA' in str(x).strip().upper()))
+            pos_anc = mask_anc.stack()[mask_anc.stack()].index.tolist()
+
+            mat_clp = eq_clp = moi_clp = mod_clp = gg_clp = None
+            mat_uf  = eq_uf  = moi_uf  = mod_uf  = gg_uf  = None
+            costo_clp = costo_uf = None
+            venta_clp = venta_uf = None
+            utilidad_clp = margen_val = None
+
+            if pos_anc:
+                f_a, c_a = pos_anc[0]
+
+                # Costo/Venta/Utilidad/Margen — offsets estables
+                costo_clp    = extraer_numero(df_res.iloc[f_a + 13, c_a + 2])
+                costo_uf     = extraer_numero(df_res.iloc[f_a + 13, c_a + 3])
+                venta_clp    = extraer_numero(df_res.iloc[f_a + 15, c_a + 2])
+                venta_uf     = extraer_numero(df_res.iloc[f_a + 15, c_a + 3])
+                utilidad_clp = extraer_numero(df_res.iloc[f_a + 17, c_a + 2])
+                # MARGEN en offset(+18,+4) — una fila más abajo que en Corrientes Débiles
+                margen_val   = extraer_numero(df_res.iloc[f_a + 17, c_a + 4])
+                if margen_val is None:
+                    margen_val = extraer_numero(df_res.iloc[f_a + 18, c_a + 4])
+
+                # ── Estrategia A: bloque resumen derecho ──────────────────
+                # Offset(+2,+6) = 'MATERIALES' — una fila más arriba que en FCD
+                try:
+                    etiqueta = str(df_res.iloc[f_a + 2, c_a + 6]).strip().upper()
+                    tiene_bloque = 'MAT' in etiqueta or 'MATERIAL' in etiqueta
+                except IndexError:
+                    tiene_bloque = False
+
+                if tiene_bloque:
+                    mat_clp = extraer_numero(df_res.iloc[f_a + 2, c_a + 7])
+                    mat_uf  = extraer_numero(df_res.iloc[f_a + 2, c_a + 8])
+                    eq_clp  = extraer_numero(df_res.iloc[f_a + 3, c_a + 7])
+                    eq_uf   = extraer_numero(df_res.iloc[f_a + 3, c_a + 8])
+                    moi_clp = extraer_numero(df_res.iloc[f_a + 4, c_a + 7])
+                    moi_uf  = extraer_numero(df_res.iloc[f_a + 4, c_a + 8])
+                    mod_clp = extraer_numero(df_res.iloc[f_a + 5, c_a + 7])
+                    mod_uf  = extraer_numero(df_res.iloc[f_a + 5, c_a + 8])
+                    gg_clp  = extraer_numero(df_res.iloc[f_a + 6, c_a + 7])
+                    gg_uf   = extraer_numero(df_res.iloc[f_a + 6, c_a + 8])
+
+                else:
+                    # ── Estrategia B: sumar desde lista izquierda ─────────
+                    col_clp = c_a + 2
+                    col_uf  = c_a + 3
+                    for r in range(f_a + 2, f_a + 13):
+                        if r >= len(df_res): break
+                        texto = str(df_res.iloc[r, c_a + 1]).strip().upper()
+                        v_clp = extraer_numero(df_res.iloc[r, col_clp])
+                        v_uf  = extraer_numero(df_res.iloc[r, col_uf])
+                        if not texto or texto == 'NAN': continue
+
+                        if any(t in texto for t in ('MATERIAL',)):
+                            mat_clp = (mat_clp or 0) + (v_clp or 0)
+                            mat_uf  = (mat_uf  or 0) + (v_uf  or 0)
+                        elif 'EQUIPO' in texto:
+                            eq_clp  = (eq_clp  or 0) + (v_clp or 0)
+                            eq_uf   = (eq_uf   or 0) + (v_uf  or 0)
+                        elif 'INDIRECTA' in texto or texto == 'MOI':
+                            moi_clp = (moi_clp or 0) + (v_clp or 0)
+                            moi_uf  = (moi_uf  or 0) + (v_uf  or 0)
+                        elif 'DIRECTA' in texto or texto == 'MOD':
+                            mod_clp = (mod_clp or 0) + (v_clp or 0)
+                            mod_uf  = (mod_uf  or 0) + (v_uf  or 0)
+                        elif 'GASTO' in texto or texto == 'GG':
+                            gg_clp  = (gg_clp  or 0) + (v_clp or 0)
+                            gg_uf   = (gg_uf   or 0) + (v_uf  or 0)
+
+            # ── 4. ARMAR REGISTRO ──────────────────────────────────────────
+            registro = {
+                'ID':               id_proyecto,
+                'Proyecto':         nombre_val,
+                'Fecha':            fecha_val,
+                'Valor_UF':         valor_uf,
+                'Valor_USD':        valor_dolar,
+                'MAT':              mat_clp,
+                'MAT_UF':           mat_uf,
+                'EQ':               eq_clp,
+                'EQ_UF':            eq_uf,
+                'MOI':              moi_clp,
+                'MOI_UF':           moi_uf,
+                'MOD':              mod_clp,
+                'MOD_UF':           mod_uf,
+                'GG':               gg_clp,
+                'GG_UF':            gg_uf,
+                'Costo_Directo':    costo_clp,
+                'Costo_Directo_UF': costo_uf,
+                'Venta_CLP':        venta_clp,
+                'Venta_UF':         venta_uf,
+                'Utilidad_CLP':     utilidad_clp,
+                'Margen':           margen_val,
+            }
+
+            lista_maestra.append(pd.DataFrame([registro]))
+            print(f"✅ Procesado: {id_proyecto}")
+
+        except Exception as e:
+            print(f"❌ Error en {archivo}: {e}")
+
+    if not lista_maestra:
+        return None
+
+    return pd.concat(lista_maestra, ignore_index=True)
+
+
+if __name__ == "__main__":
+    resultado = procesar_cableado()
+    if resultado is not None:
+        print(f"\n--- Proceso terminado ---")
+        print(f"Filas: {len(resultado)} | Columnas: {len(resultado.columns)}")
+        print("\nMissing values por columna:")
+        print(resultado.isnull().sum())
