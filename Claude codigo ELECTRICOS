@@ -1,0 +1,212 @@
+import pandas as pd
+import os
+import re
+
+# --- CONFIGURACIÓN DE RUTAS ---
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+ruta_input = os.path.normpath(os.path.join(BASE_DIR, '..', 'input'))
+
+
+def normalizar_fecha(texto):
+    """Normaliza cualquier fecha de 6 dígitos al formato DD-MM-YY."""
+    if pd.isna(texto):
+        return ""
+    match = re.search(r'(\d{2})[^\d](\d{2})[^\d](\d{2})', str(texto))
+    if match:
+        return f"{match.group(1)}-{match.group(2)}-{match.group(3)}"
+    return ""
+
+
+def extraer_numero(valor):
+    """Intenta convertir un valor a float. Retorna None si no es posible."""
+    try:
+        if pd.isna(valor):
+            return None
+        return float(valor)
+    except (TypeError, ValueError):
+        return None
+
+
+def procesar_y_visualizar():
+    if not os.path.exists(ruta_input):
+        print(f"⚠️ Carpeta no encontrada: {ruta_input}")
+        return None
+
+    archivos = [f for f in os.listdir(ruta_input) if f.endswith('.xlsx')]
+    print(f"📊 Archivos encontrados: {len(archivos)}")
+
+    lista_maestra = []
+
+    for archivo in archivos:
+        id_proyecto = os.path.splitext(archivo)[0]
+        ruta_completa = os.path.join(ruta_input, archivo)
+
+        try:
+            df_hoja = pd.read_excel(ruta_completa, sheet_name='COSTOS', header=None)
+
+            # ── 1. NOMBRE DE OBRA ──────────────────────────────────────────
+            nombre_proyecto_val = ""
+            mask_obra = (df_hoja == 'OBRA :')
+            pos_obra = mask_obra.stack()[mask_obra.stack()].index.tolist()
+            if pos_obra:
+                f_o, c_o = pos_obra[0]
+                nombre_proyecto_val = df_hoja.iloc[f_o, c_o + 1]
+
+            # ── 2. FECHA DEL PROYECTO ──────────────────────────────────────
+            fecha_proyecto_val = ""
+            mask_fecha = (df_hoja == 'FECHA')
+            pos_fecha = mask_fecha.stack()[mask_fecha.stack()].index.tolist()
+            if pos_fecha:
+                f_f, c_f = pos_fecha[0]
+                valor_f = df_hoja.iloc[f_f, c_f + 1]
+                if hasattr(valor_f, 'strftime'):
+                    fecha_proyecto_val = valor_f.strftime('%d-%m-%Y')
+                else:
+                    fecha_proyecto_val = str(valor_f)
+
+            # ── 3. TIEMPO DE EJECUCIÓN ─────────────────────────────────────
+            tiempoejecucion_val = None
+            mask_te = (df_hoja == 'TIEMPO DE EJECUCION')
+            pos_te = mask_te.stack()[mask_te.stack()].index.tolist()
+            if pos_te:
+                f_t, c_t = pos_te[0]
+                tiempoejecucion_val = extraer_numero(df_hoja.iloc[f_t + 1, c_t])
+
+            # ── 4. MTS² ────────────────────────────────────────────────────
+            mts_val = None
+            mask_mts = (df_hoja == 'MTS²')
+            pos_mts = mask_mts.stack()[mask_mts.stack()].index.tolist()
+            if pos_mts:
+                f_m, c_m = pos_mts[0]
+                # Buscar el valor numérico en las celdas adyacentes (abajo y a la derecha)
+                for dr, dc in [(1, 1), (1, 0), (0, 1)]:
+                    candidato = extraer_numero(df_hoja.iloc[f_m + dr, c_m + dc])
+                    if candidato is not None and candidato > 0:
+                        mts_val = candidato
+                        break
+
+            # ── 5. TOTAL DD/HH ─────────────────────────────────────────────
+            hh_val = None
+            mask_hh = (df_hoja == 'TOTAL DD/HH')
+            pos_hh = mask_hh.stack()[mask_hh.stack()].index.tolist()
+            if pos_hh:
+                f_h, c_h = pos_hh[0]
+                hh_val = extraer_numero(df_hoja.iloc[f_h + 1, c_h])
+
+            # ── 6. BLOQUE VENTA / UT (anchor único para 5 valores) ─────────
+            # Desde VENTA en (f, c):
+            #   offset(0, 0)  = 'VENTA'    offset(0,+2) = 'UT'
+            #   offset(1, 0)  = Venta $    offset(1,+2) = Utilidad $
+            #   offset(2,+2)  = Utilidad UF
+            #   offset(3, 0)  = Venta UF   offset(3,+2) = Margen %
+            venta_clp_val   = None
+            utilidad_clp_val = None
+            utilidad_uf_val  = None
+            venta_uf_val     = None
+            margen_val       = None
+
+            mask_venta = (df_hoja == 'VENTA')
+            pos_venta = mask_venta.stack()[mask_venta.stack()].index.tolist()
+
+            # Puede haber dos ocurrencias de VENTA; usamos la que tenga UT dos columnas a la derecha
+            pos_venta_principal = None
+            for f_v, c_v in pos_venta:
+                try:
+                    if df_hoja.iloc[f_v, c_v + 2] == 'UT':
+                        pos_venta_principal = (f_v, c_v)
+                        break
+                except IndexError:
+                    continue
+
+            if pos_venta_principal:
+                f_v, c_v = pos_venta_principal
+                venta_clp_val    = extraer_numero(df_hoja.iloc[f_v + 1, c_v])
+                utilidad_clp_val = extraer_numero(df_hoja.iloc[f_v + 1, c_v + 2])
+                utilidad_uf_val  = extraer_numero(df_hoja.iloc[f_v + 2, c_v + 2])
+                venta_uf_val     = extraer_numero(df_hoja.iloc[f_v + 3, c_v])
+                margen_val       = extraer_numero(df_hoja.iloc[f_v + 3, c_v + 2])
+
+            # ── 7. MONEDAS DE CAMBIO ───────────────────────────────────────
+            valor_euro = None
+            valor_usd  = None
+            valor_uf   = None
+            fecha_moneda = ""
+
+            mask_mon = (df_hoja == 'MONEDAS DE CAMBIO')
+            pos_mon = mask_mon.stack()[mask_mon.stack()].index.tolist()
+            if pos_mon:
+                f_mon, c_mon = pos_mon[0]
+                for i in range(1, 5):
+                    if f_mon + i >= len(df_hoja):
+                        break
+                    celda_nombre = str(df_hoja.iloc[f_mon + i, c_mon]).upper()
+                    valor_celda  = df_hoja.iloc[f_mon + i, c_mon + 1]
+                    if "EURO" in celda_nombre:
+                        valor_euro = extraer_numero(valor_celda)
+                    if "US$" in celda_nombre or "DOLAR" in celda_nombre:
+                        valor_usd = extraer_numero(valor_celda)
+                    if "UF" in celda_nombre:
+                        valor_uf = extraer_numero(valor_celda)
+                        # Fecha extraída solo de la fila UF y normalizada
+                        fecha_moneda = normalizar_fecha(df_hoja.iloc[f_mon + i, c_mon])
+
+            # ── 8. TABLA TURQUESA (COSTOS APROBADOS) ──────────────────────
+            # Se extrae independientemente; si falla, igual se guarda el registro
+            costos_tabla = {}
+            mask_ca = (df_hoja == 'COSTOS APROBADOS')
+            pos_ca = mask_ca.stack()[mask_ca.stack()].index.tolist()
+
+            fila_ca = None
+            for f_ca, c_ca in pos_ca:
+                if f_ca + 1 < len(df_hoja) and str(df_hoja.iloc[f_ca + 1, c_ca]).strip() == 'MAT':
+                    fila_ca = (f_ca, c_ca)
+                    break
+
+            if fila_ca:
+                f_ca, c_ca = fila_ca
+                titulos = df_hoja.iloc[f_ca + 1, c_ca: c_ca + 8].values
+                valores = df_hoja.iloc[f_ca + 6, c_ca: c_ca + 8].values
+                for t, v in zip(titulos, valores):
+                    if pd.notnull(t):
+                        costos_tabla[str(t).strip()] = extraer_numero(v)
+
+            # ── 9. ARMAR REGISTRO ──────────────────────────────────────────
+            registro = {
+                'ID':                id_proyecto,
+                'Proyecto':          nombre_proyecto_val,
+                'Fecha':             fecha_proyecto_val,
+                'Fecha_Moneda':      fecha_moneda,
+                'Valor_EURO':        valor_euro,
+                'Valor_US$':         valor_usd,
+                'Valor_UF':          valor_uf,
+                'Tiempo_Ejecucion':  tiempoejecucion_val,
+                'MTS':               mts_val,
+                'HH':                hh_val,
+                'Venta_CLP':         venta_clp_val,
+                'Venta_UF':          venta_uf_val,
+                'Utilidad_CLP':      utilidad_clp_val,
+                'Utilidad_UF':       utilidad_uf_val,
+                'Margen':            margen_val,
+                **costos_tabla
+            }
+
+            lista_maestra.append(pd.DataFrame([registro]))
+            print(f"✅ Procesado: {id_proyecto}")
+
+        except Exception as e:
+            print(f"❌ Error en {archivo}: {e}")
+
+    if not lista_maestra:
+        return None
+
+    df_resultado = pd.concat(lista_maestra, ignore_index=True)
+    return df_resultado
+
+
+if __name__ == "__main__":
+    resultado = procesar_y_visualizar()
+    if resultado is not None:
+        print("\n--- Proceso terminado ---")
+        print(f"Filas: {len(resultado)} | Columnas: {len(resultado.columns)}")
+        print("\nMissing values por columna:")
+        print(resultado.isnull().sum())
